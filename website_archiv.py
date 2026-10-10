@@ -589,14 +589,24 @@ def http_json(url: str, method: str = "GET", data: Optional[dict] = None,
     if body is not None:
         headers["Content-Type"] = "application/x-www-form-urlencoded"
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    # SECURITY: never auto-follow redirects for API requests. These requests may
+    # carry the Internet Archive S3 Authorization header. A redirect is reported
+    # to the caller instead of risking forwarding credentials to another host.
+    opener = urllib.request.build_opener(NoRedirectHandler())
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        with opener.open(req, timeout=timeout) as response:
             text = response.read(1_000_000).decode("utf-8", errors="replace")
             try:
                 return response.status, json.loads(text), text
             except json.JSONDecodeError:
                 return response.status, None, text[:3000]
     except urllib.error.HTTPError as exc:
+        if exc.code in REDIRECT_CODES:
+            location = str(exc.headers.get("Location", "")) if exc.headers else ""
+            detail = f"Redirect not followed for credential safety (HTTP {exc.code})."
+            if location:
+                detail += f" Location: {location}"
+            return exc.code, None, detail
         raw = exc.read(1_000_000)
         text = raw.decode("utf-8", errors="replace")
         try:
